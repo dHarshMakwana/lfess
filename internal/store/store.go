@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"filippo.io/age"
 	"github.com/dHarshMakwana/lfess/internal/crypto"
 )
 
@@ -18,8 +17,6 @@ import (
 //   - ops.log append-only encrypted operation log (see OpsLog)
 type Store struct {
 	dataDir   string
-	identity  age.Identity
-	recipient age.Recipient
 }
 
 func New(dataDir string) (*Store, error) {
@@ -30,16 +27,10 @@ func New(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
-
-	id, err := crypto.EnsureX25519Identity(dataDir)
-	if err != nil {
-		return nil, err
-	}
+	crypto.SetDataDir(dataDir)
 
 	return &Store{
 		dataDir:   dataDir,
-		identity:  id,
-		recipient: id.Recipient(),
 	}, nil
 }
 
@@ -49,5 +40,5 @@ func (s *Store) deviceIDPath() string { return filepath.Join(s.dataDir, deviceID
 func (s *Store) opsLogPath() string   { return filepath.Join(s.dataDir, opsLogFileName) }
 
 func (s *Store) OpsLog() *OpsLog {
-	return &OpsLog{path: s.opsLogPath(), recipient: s.recipient, identity: s.identity}
+	return &OpsLog{path: s.opsLogPath()}
 }

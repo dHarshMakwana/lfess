@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"strings"
 
 	"filippo.io/age"
@@ -16,14 +17,47 @@ import (
 // Phase 2 contract: ops are JSON-encoded and then encrypted; the store is
 // responsible for base64 encoding and per-line framing.
 
-// Encrypt encrypts plaintext with age using the given recipients.
-func Encrypt(plaintext []byte, recipients ...age.Recipient) ([]byte, error) {
-	if len(recipients) == 0 {
-		return nil, fmt.Errorf("encrypt: no recipients provided")
+// Phase 3 public API
+//
+// Encrypt / Decrypt expose a tiny, stable interface. Callers are responsible for
+// JSON/base64/line-framing per the store contract.
+
+var (
+	mu      sync.RWMutex
+	dataDir string
+)
+
+// SetDataDir configures where crypto persists the age identity (key.age).
+//
+// It must be set by wiring (CLI/server/store) before calling Encrypt/Decrypt.
+func SetDataDir(dir string) {
+	mu.Lock()
+	defer mu.Unlock()
+	dataDir = strings.TrimSpace(dir)
+}
+
+func getDataDir() (string, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if strings.TrimSpace(dataDir) == "" {
+		return "", fmt.Errorf("crypto data dir is not configured")
+	}
+	return dataDir, nil
+}
+
+// Encrypt encrypts plaintext to age ciphertext bytes.
+func Encrypt(plaintext []byte) ([]byte, error) {
+	dir, err := getDataDir()
+	if err != nil {
+		return nil, err
+	}
+	id, err := EnsureX25519Identity(dir)
+	if err != nil {
+		return nil, err
 	}
 
 	var buf bytes.Buffer
-	w, err := age.Encrypt(&buf, recipients...)
+	w, err := age.Encrypt(&buf, id.Recipient())
 	if err != nil {
 		return nil, fmt.Errorf("encrypt: %w", err)
 	}
@@ -37,13 +71,18 @@ func Encrypt(plaintext []byte, recipients ...age.Recipient) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Decrypt decrypts ciphertext with age using the given identities.
-func Decrypt(ciphertext []byte, identities ...age.Identity) ([]byte, error) {
-	if len(identities) == 0 {
-		return nil, fmt.Errorf("decrypt: no identities provided")
+// Decrypt decrypts age ciphertext bytes to plaintext.
+func Decrypt(ciphertext []byte) ([]byte, error) {
+	dir, err := getDataDir()
+	if err != nil {
+		return nil, err
+	}
+	id, err := EnsureX25519Identity(dir)
+	if err != nil {
+		return nil, err
 	}
 
-	r, err := age.Decrypt(bytes.NewReader(ciphertext), identities...)
+	r, err := age.Decrypt(bytes.NewReader(ciphertext), id)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt: %w", err)
 	}
@@ -55,6 +94,10 @@ func Decrypt(ciphertext []byte, identities ...age.Identity) ([]byte, error) {
 }
 
 const KeyFileName = "key.age"
+
+func keyPath(dataDir string) string {
+	return filepath.Join(dataDir, KeyFileName)
+}
 
 // EnsureX25519Identity loads an age X25519 identity from <dataDir>/key.age, or creates
 // it if it doesn't exist. The file is created with mode 0600.
@@ -69,7 +112,7 @@ func EnsureX25519Identity(dataDir string) (*age.X25519Identity, error) {
 		return nil, fmt.Errorf("key: create data dir: %w", err)
 	}
 
-	p := filepath.Join(dataDir, KeyFileName)
+	p := keyPath(dataDir)
 	b, err := os.ReadFile(p)
 	if err == nil {
 		s := strings.TrimSpace(string(b))

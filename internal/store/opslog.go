@@ -13,8 +13,6 @@ import (
 
     "github.com/dHarshMakwana/lfess/internal/crypto"
     "github.com/dHarshMakwana/lfess/internal/model"
-
-    "filippo.io/age"
 )
 
 const opsLogFileName = "ops.log"
@@ -23,8 +21,6 @@ const opsLogFileName = "ops.log"
 // Phase 2: each line is base64(age ciphertext) for a single JSON operation.
 type OpsLog struct {
     path      string
-    recipient age.Recipient
-    identity  age.Identity
 }
 
 func NewOpsLog(dataDir string) (*OpsLog, error) {
@@ -34,11 +30,8 @@ func NewOpsLog(dataDir string) (*OpsLog, error) {
     if err := os.MkdirAll(dataDir, 0o700); err != nil {
         return nil, fmt.Errorf("create data dir: %w", err)
     }
-    id, err := crypto.EnsureX25519Identity(dataDir)
-    if err != nil {
-        return nil, err
-    }
-    return &OpsLog{path: filepath.Join(dataDir, opsLogFileName), recipient: id.Recipient(), identity: id}, nil
+    crypto.SetDataDir(dataDir)
+    return &OpsLog{path: filepath.Join(dataDir, opsLogFileName)}, nil
 }
 
 // Append writes exactly one operation as a single line and fsyncs.
@@ -58,7 +51,7 @@ func (l *OpsLog) Append(op model.Operation) error {
         return fmt.Errorf("marshal op: %w", err)
     }
 
-    ciphertext, err := crypto.Encrypt(plaintext, l.recipient)
+    ciphertext, err := crypto.Encrypt(plaintext)
     if err != nil {
         return fmt.Errorf("encrypt op: %w", err)
     }
@@ -140,7 +133,7 @@ func (l *OpsLog) readDecoded() ([]model.Operation, error) {
             fmt.Fprintf(os.Stderr, "warning: ops.log line %d base64 decode failed: %v; skipping\n", lineNo, err)
             continue
         }
-        plaintext, err := crypto.Decrypt(ciphertext, l.identity)
+        plaintext, err := crypto.Decrypt(ciphertext)
         if err != nil {
             fmt.Fprintf(os.Stderr, "warning: ops.log line %d decrypt failed: %v; skipping\n", lineNo, err)
             continue
