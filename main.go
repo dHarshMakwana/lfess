@@ -1,3 +1,7 @@
 package main
 
-func main() {}
+import "github.com/dHarshMakwana/lfess/cmd"
+
+func main() {
+	cmd.Execute()
+}
