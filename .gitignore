@@ -1,0 +1,11 @@
+# Binaries
+lfess
+*.exe
+
+# Test data directories
+/tmp/
+
+# Editor
+.idea/
+.vscode/
+*.swp
