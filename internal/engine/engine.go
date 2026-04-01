@@ -10,13 +10,16 @@ import (
 // result in append order (local first, then remote ops not already seen).
 // This is the only place deduplication occurs.
 func Merge(local, remote []model.Operation) []model.Operation {
-	seen := make(map[string]struct{}, len(local))
-	for _, op := range local {
-		seen[op.OperationID] = struct{}{}
-	}
+	seen := make(map[string]struct{}, len(local)+len(remote))
+	out := make([]model.Operation, 0, len(local)+len(remote))
 
-	out := make([]model.Operation, len(local))
-	copy(out, local)
+	for _, op := range local {
+		if _, exists := seen[op.OperationID]; exists {
+			continue
+		}
+		seen[op.OperationID] = struct{}{}
+		out = append(out, op)
+	}
 
 	for _, op := range remote {
 		if _, exists := seen[op.OperationID]; !exists {

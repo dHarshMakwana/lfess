@@ -220,6 +220,31 @@ func TestMerge_Deduplication_NoDuplicates(t *testing.T) {
 	assert.Len(t, merged, 1, "duplicate op ID must be deduplicated")
 }
 
+func TestMerge_DeduplicatesWithinLocalInput(t *testing.T) {
+	op := addOp("op1", "item1", "hello", epoch)
+	merged := engine.Merge([]model.Operation{op, op}, nil)
+	require.Len(t, merged, 1)
+	assert.Equal(t, "op1", merged[0].OperationID)
+}
+
+func TestMerge_DeduplicatesWithinRemoteInput(t *testing.T) {
+	op := addOp("op1", "item1", "hello", epoch)
+	merged := engine.Merge(nil, []model.Operation{op, op})
+	require.Len(t, merged, 1)
+	assert.Equal(t, "op1", merged[0].OperationID)
+}
+
+func TestMerge_EmptyOperationIDDeduplication(t *testing.T) {
+	// Edge case from phase plan: empty OperationID still participates in seen-set.
+	op1 := addOp("", "item1", "hello", epoch)
+	op2 := addOp("", "item2", "world", epoch.Add(time.Second))
+	merged := engine.Merge([]model.Operation{op1}, []model.Operation{op2})
+
+	// Empty ID collides by design for MVP; first one is kept.
+	require.Len(t, merged, 1)
+	assert.Equal(t, "item1", merged[0].ItemID)
+}
+
 func TestMerge_LocalOrderPreserved_RemoteAppended(t *testing.T) {
 	local := []model.Operation{
 		addOp("op1", "item1", "a", epoch),
@@ -311,6 +336,44 @@ func TestReplay_Idempotent(t *testing.T) {
 	state1 := engine.Replay(ops)
 	state2 := engine.Replay(ops)
 	assert.Equal(t, state1, state2)
+}
+
+func TestReplay_InterleavedItems_WithOrphans(t *testing.T) {
+	// Multiple interleaved items in one slice, including orphan ops.
+	ops := []model.Operation{
+		addOp("op1", "itemA", "a0", epoch),
+		updateOp("op2", "itemB", "ghost", epoch.Add(time.Second)), // orphan UPDATE
+		addOp("op3", "itemB", "b0", epoch.Add(2*time.Second)),
+		updateOp("op4", "itemA", "a1", epoch.Add(3*time.Second)),
+		deleteOp("op5", "itemB", epoch.Add(4*time.Second)),
+		deleteOp("op6", "itemC", epoch.Add(5*time.Second)), // orphan DELETE
+	}
+
+	state := engine.Replay(ops)
+	require.Len(t, state, 2)
+
+	assert.Equal(t, "a1", state["itemA"].Content)
+	assert.False(t, state["itemA"].Deleted)
+
+	assert.True(t, state["itemB"].Deleted)
+	assert.NotContains(t, state, "itemC")
+}
+
+func TestReplay_EmptyItemIDBehavior(t *testing.T) {
+	// Engine does not validate IDs; it applies rules consistently even for empty item IDs.
+	ops := []model.Operation{
+		updateOp("op1", "", "ghost", epoch), // orphan update for empty key
+		addOp("op2", "", "base", epoch.Add(time.Second)),
+		updateOp("op3", "", "latest", epoch.Add(2*time.Second)),
+	}
+
+	state := engine.Replay(ops)
+	require.Len(t, state, 1)
+	item, ok := state[""]
+	require.True(t, ok)
+	assert.Equal(t, "", item.ID)
+	assert.Equal(t, "latest", item.Content)
+	assert.False(t, item.Deleted)
 }
 
 func TestMerge_100Ops_StateMatchesUnionReplay(t *testing.T) {
