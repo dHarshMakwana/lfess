@@ -6,8 +6,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"strings"
+	"sync"
+	"time"
 
 	"filippo.io/age"
 )
@@ -135,16 +136,23 @@ func EnsureX25519Identity(dataDir string) (*age.X25519Identity, error) {
 	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
-			b2, err2 := os.ReadFile(p)
-			if err2 != nil {
-				return nil, fmt.Errorf("key: read identity after exist race: %w", err2)
+			for i := 0; i < 20; i++ {
+				b2, err2 := os.ReadFile(p)
+				if err2 != nil {
+					return nil, fmt.Errorf("key: read identity after exist race: %w", err2)
+				}
+				s2 := strings.TrimSpace(string(b2))
+				if s2 == "" {
+					time.Sleep(5 * time.Millisecond)
+					continue
+				}
+				id2, err2 := age.ParseX25519Identity(s2)
+				if err2 == nil {
+					return id2, nil
+				}
+				time.Sleep(5 * time.Millisecond)
 			}
-			s2 := strings.TrimSpace(string(b2))
-			id2, err2 := age.ParseX25519Identity(s2)
-			if err2 != nil {
-				return nil, fmt.Errorf("key: parse identity after exist race: %w", err2)
-			}
-			return id2, nil
+			return nil, fmt.Errorf("key: parse identity after exist race: identity file not ready")
 		}
 		return nil, fmt.Errorf("key: create identity file: %w", err)
 	}

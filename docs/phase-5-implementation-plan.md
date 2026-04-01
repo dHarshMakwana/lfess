@@ -179,29 +179,29 @@ Phase 5 tests should validate the server layer in isolation:
 
 ## Acceptance Criteria (Phase 5)
 
-- [ ] `GET /ops` returns a valid JSON array of base64 ciphertexts in append order.
-- [ ] `GET /ops` applies no sorting, filtering, deduplication, or business logic.
-- [ ] `/ops` response contains exactly the same non-empty ciphertext lines as `ops.log`, in the same order.
-- [ ] `POST /ops` is implemented and imports peer operations via store + engine flow.
-- [ ] `GET /health` returns HTTP `200`.
-- [ ] Server host bind is configurable (default `127.0.0.1`, supports `0.0.0.0` for same-network peers).
-- [ ] Default port is `7777`, with override support for `--port` and `LFESS_PORT`.
-- [ ] `ReadTimeout` and `WriteTimeout` are both `10s`.
-- [ ] Server handles concurrent requests without data races (`go test -race ./...`).
-- [ ] Server shuts down cleanly on `SIGINT`/`SIGTERM` using `srv.Shutdown(ctx)`.
+- [x] `GET /ops` returns a valid JSON array of base64 ciphertexts in append order.
+- [x] `GET /ops` applies no sorting, filtering, deduplication, or business logic.
+- [x] `/ops` response contains exactly the same non-empty ciphertext lines as `ops.log`, in the same order.
+- [x] `POST /ops` is implemented and imports peer operations via store + engine flow.
+- [x] `GET /health` returns HTTP `200`.
+- [x] Server host bind is configurable (default `127.0.0.1`, supports `0.0.0.0` for same-network peers).
+- [x] Default port is `7777`, with override support for `--port` and `LFESS_PORT`.
+- [x] `ReadTimeout` and `WriteTimeout` are both `10s`.
+- [x] Server handles concurrent requests without data races (`go test -race ./...`).
+- [x] Server shuts down cleanly on `SIGINT`/`SIGTERM` using `srv.Shutdown(ctx)`.
 
 ---
 
 ## Checklist (Phase 5)
 
-- [ ] Create `server/server.go` HTTP mux and handler wiring
-- [ ] Implement `GET /health` (`200 OK`)
-- [ ] Implement `GET /ops` returning raw encrypted lines as `[]string` JSON
-- [ ] Implement `POST /ops` import path
-- [ ] Add configurable host bind (`--host` / `LFESS_HOST`) with safe default `127.0.0.1`
-- [ ] Add timeout configuration (`ReadTimeout`, `WriteTimeout`)
-- [ ] Add graceful shutdown on `SIGINT`/`SIGTERM`
-- [ ] Add `server/server_test.go` for handler, ordering, and error-path tests
-- [ ] Run `go test ./...`
-- [ ] Run `go test -race ./...`
-- [ ] Manual smoke check with `curl /health` and `curl /ops`
+- [x] Create `server/server.go` HTTP mux and handler wiring
+- [x] Implement `GET /health` (`200 OK`)
+- [x] Implement `GET /ops` returning raw encrypted lines as `[]string` JSON
+- [x] Implement `POST /ops` import path
+- [x] Add configurable host bind (`--host` / `LFESS_HOST`) with safe default `127.0.0.1`
+- [x] Add timeout configuration (`ReadTimeout`, `WriteTimeout`)
+- [x] Add graceful shutdown on `SIGINT`/`SIGTERM`
+- [x] Add `server/server_test.go` for handler, ordering, and error-path tests
+- [x] Run `go test ./...`
+- [x] Run `go test -race ./...`
+- [x] Manual smoke check with `curl /health` and `curl /ops`
