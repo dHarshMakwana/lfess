@@ -1,189 +1,75 @@
-# LFESS — Phase 2 Implementation Plan (Append-Only JSON Log)
-
-> Phase 2 — `internal/store`
->
-> This document is a *separate* implementation plan for Phase 2 only. It does not change or replace the original plan; it elaborates the exact same Phase 2 design into actionable steps.
-
----
+# LFESS - Phase 2 Implementation Plan (Append-Only JSON Log)
 
 ## Scope
 
-### Goal
+Implement append-only encrypted operation storage in internal/store for ops.log and device.id.
 
-Implement the append-only encrypted operation log in `internal/store`.
+Non-goals for this phase:
+- No deduplication logic.
+- No sync or HTTP behavior.
+- No log compaction or rewrite behavior.
 
-- Provide safe, append-only persistence for:
-  - `ops.log` (newline-delimited base64-encoded age ciphertext, one op per line)
-  - `device.id` (persisted device identity)
+## Contract
 
-### Non-goals (MVP)
+- Append operation path: JSON encode -> age encrypt -> base64 encode -> append one line to ops.log -> fsync.
+- Read operation path: read each line in order -> base64 decode -> decrypt -> unmarshal -> return valid operations in order.
+- Corruption tolerance: unreadable lines are skipped with stderr warnings that include 1-based line number.
+- Append-only guarantee: no seek/truncate/rename rewrite flow.
 
-- No compaction, pruning, or rewriting
-- No deduplication (dedup happens only inside `engine.Merge`)
-- No sync/HTTP logic (later phases)
+## Tasks
 
----
+- T2.1: Ensure data directory creation and permissions (0700 directory, 0600 files).
+- T2.2: Implement canonical path helpers for device.id and ops.log.
+- T2.3: Implement AppendOperation using strict append-only write semantics and fsync.
+- T2.4: Implement ReadOperations that preserves file order for valid lines.
+- T2.5: Implement line-level skip-and-warn handling for empty/corrupt/undecryptable lines.
+- T2.6: Implement ReadEncryptedLines to return raw non-empty ciphertext lines in append order.
+- T2.7: Implement device identity read-or-create persistence in device.id.
+- T2.8: Add table-driven tests for append, read, corruption tolerance, and concurrent append stress.
 
-## Contract (what `internal/store` must do)
+## Requirement Mapping
 
-- **Append**
-  - Input: `model.Operation`
-  - JSON encode → age encrypt → base64 encode
-  - Append **exactly one** line `"<base64>\n"` to `ops.log`
-  - Call `fsync` (`f.Sync()`) **after every write** before returning success
+- T2.1 -> R24, R46
+- T2.2 -> R24, R46
+- T2.3 -> R24, R26, R34, R46
+- T2.4 -> R25, R35
+- T2.5 -> R25, R35
+- T2.6 -> R31, R36, R46
+- T2.7 -> R49
+- T2.8 -> R24, R25, R26, R34, R35, R50
 
-- **Read**
-  - Read `ops.log` line-by-line in file order
-  - For each line: base64 decode → age decrypt → JSON unmarshal
-  - Output: `[]model.Operation` containing **only successfully decrypted/unmarshaled ops**, in the same order they appear in the file
+## Acceptance Criteria (STRICT)
 
-- **Corruption tolerance**
-  - Any unreadable line (base64/decrypt/unmarshal failure, or empty line) is **skipped**
-  - A warning is printed to **stderr** and must include the **1-based line number**
+- AC2.1 (R24, R26, R46): Executing one append call increases non-empty line count in ops.log by exactly one.
+- AC2.2 (R24, R46): Append writes one newline-terminated base64 string per call and does not modify existing bytes in earlier lines.
+- AC2.3 (R24): Append success is returned only after fsync completes without error.
+- AC2.4 (R34): No plaintext JSON operation body appears on disk in ops.log after append.
+- AC2.5 (R25, R35): ReadOperations returns valid operations in the same order as their corresponding lines in ops.log.
+- AC2.6 (R24, R25): Reading when ops.log is missing returns an empty slice and no fatal error.
+- AC2.7 (R25, R35): A corrupted line is skipped, stderr contains its 1-based line number, and later valid lines are still processed.
+- AC2.8 (R25): ReadOperations does not deduplicate repeated operations with distinct lines.
+- AC2.9 (R31, R36, R46): ReadEncryptedLines returns exactly the same non-empty ciphertext lines as ops.log in the same order.
+- AC2.10 (R24, R46): Data directory permissions are 0700 and new store-managed files are created with 0600 permissions.
+- AC2.11 (R50): Under concurrent append stress, resulting non-empty lines remain parseable as base64 records.
 
-- **Append-only guarantee**
-  - No seeks, truncation, rewriting, temp files, or rename-based updates
+## Task -> AC Mapping
 
----
+- T2.1 -> AC2.10
+- T2.2 -> AC2.10
+- T2.3 -> AC2.1, AC2.2, AC2.3, AC2.4
+- T2.4 -> AC2.5, AC2.6, AC2.8
+- T2.5 -> AC2.7
+- T2.6 -> AC2.9
+- T2.7 -> AC2.10
+- T2.8 -> AC2.1, AC2.5, AC2.7, AC2.11
 
-## Files & responsibilities (Phase 2)
+## Definition of Done
 
-Keep `internal/store` small and focused.
+Phase 2 is done only when all AC2.x criteria are satisfied and every mapped requirement (R24, R25, R26, R31, R34, R35, R36, R46, R49, R50) is covered by at least one completed task and one passing acceptance check.
 
-- `internal/store/store.go`
-  - Store type / constructor
-  - path helpers for `device.id` and `ops.log`
-  - ensure `dataDir` exists
+## Validation Rules
 
-- `internal/store/opslog.go`
-  - append and read mechanics for `ops.log`
-
-- `internal/store/identity.go`
-  - device identity persistence (`device.id`)
-
-- `internal/store/opslog_test.go`
-  - append/read tests
-  - corruption behavior tests
-
----
-
-## Implementation steps (do in this order)
-
-### 1) Data directory & secure paths
-
-- Ensure `dataDir` exists: `os.MkdirAll(dataDir, 0700)`
-- Centralize filenames:
-  - `device.id`
-  - `ops.log`
-- Ensure created files are `0600`.
-
-### 2) Device identity persistence (`device.id`)
-
-Provide read-or-create semantics:
-
-- If `device.id` exists: read and return trimmed content
-- Otherwise:
-  - generate a new device ID
-  - write to `device.id` with mode `0600`
-  - return it
-
-Notes:
-
-- This phase is disk persistence only.
-- Operation ID generation remains per original plan: `deviceID + ":" + ulid.Make()` (used by CLI later).
-
-### 3) Append operation (`ops.log`) — strict append-only + fsync
-
-Mechanics must match the original plan:
-
-- `json.Marshal(op)`
-- `crypto.Encrypt(plaintext)`
-- `base64.StdEncoding.EncodeToString(ciphertext)`
-- `os.OpenFile(opsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)`
-- `WriteString(encoded + "\n")`
-- `f.Sync()`
-- `f.Close()`
-
-Constraints:
-
-- Do not use temp files.
-- Do not attempt to “repair” the log.
-
-### 4) Read operations (`ops.log`) — line-by-line decode/decrypt/unmarshal
-
-- If `ops.log` doesn’t exist: return `[]model.Operation{}`
-- Use `bufio.Scanner` to read lines
-  - Set a larger scanner buffer so normal encrypted lines never overflow in MVP
-- For each **1-based** line number:
-  - if empty → warn + continue
-  - base64 decode
-  - decrypt (`crypto.Decrypt`)
-  - unmarshal JSON into `model.Operation`
-  - append to results
-- On any per-line failure:
-  - warn to stderr with the line number
-  - continue reading
-
-### 5) Tests (table-driven)
-
-Focus on Phase 2 behaviors only.
-
-Must-haves:
-
-- Empty/missing log → empty slice
-- Append then read → round-trip equality of op
-- Multiple appends preserve order
-- Corrupted/un-decryptable line is skipped, later valid lines still load
-
-Nice-to-have:
-
-- Concurrency append stress test:
-  - run many goroutines appending
-  - then read file lines and validate each line base64-decodes (avoid flaky ordering assumptions)
-
----
-
-## Edge cases to explicitly handle
-
-- `ops.log` missing (first run)
-- `dataDir` missing / not creatable
-- empty lines in `ops.log`
-- corrupted base64
-- wrong key / decryption failure on a single line
-- large line length (scanner buffer)
-
----
-
-## Public API shape (minimal)
-
-Keep surface area small and aligned with later phases:
-
-- `AppendOperation(op model.Operation) error`
-- `ReadOperations() ([]model.Operation, error)`
-- *(Optional but needed for Phase 5 server contract)* `ReadEncryptedLines() ([]string, error)`
-  - returns raw base64 ciphertext lines in append order, exactly as stored
-
----
-
-## Acceptance Criteria (Phase 2)
-
-- [ ] Each `Append` writes exactly one new line to `ops.log` (line count increases by 1).
-- [ ] `ops.log` is append-only: no existing bytes are modified and the file is never rewritten.
-- [ ] Each append is followed by `fsync` before returning success.
-- [ ] Every `ops.log` line is base64-encoded age ciphertext (no plaintext JSON on disk).
-- [ ] Reading returns operations in the same order as lines appear in `ops.log`.
-- [ ] The store does **not** deduplicate operations; duplicates are returned as-is.
-- [ ] A single corrupted/unreadable line is skipped with a stderr warning that includes the 1-based line number.
-- [ ] Data dir is created with 0700; created files are 0600.
-
----
-
-## Checklist (Phase 2)
-
-- [ ] Add path helpers for `device.id` and `ops.log`
-- [ ] Ensure `dataDir` exists (`MkdirAll` 0700)
-- [ ] Implement device ID read-or-create persistence
-- [ ] Implement append: JSON → age encrypt → base64 → `O_APPEND` write + newline + `Sync`
-- [ ] Implement read: scanner + buffer, per-line decode/decrypt/unmarshal, skip+warn on failure
-- [ ] Add tests: empty/missing log, round-trip, order preservation, corrupted-line skip
-- [ ] Add a concurrency append stress test
+- If a requirement is not covered, the phase is incomplete.
+- If AC is vague, rewrite it before execution continues.
+- If any task has no mapped requirement ID, the phase contract is invalid.
+- If any mapped AC has no reproducible verification method, the AC is invalid.

@@ -1,142 +1,56 @@
 # LFESS - MVP Specification
 
----
+## Requirements
 
-## 1. Objective
-
-Build the smallest possible system that proves:
-
-- Local-first data handling
-- Sync between two devices
-- Merge without data loss
-
----
-
-## 2. Scope
-
-### Included
-- Single user
-- Multiple devices (simulated)
-- Basic list data model
-- Manual or local sync
-- Basic encryption
-
-### Excluded
-- Multi-user support
-- Real-time sync
-- Advanced UI
-- Complex conflict resolution
-
----
-
-## 3. Data Model
-
-### Entity: Item
-- id (unique)
-- content (string)
-- deleted (boolean)
-
----
-
-### Operation Types
-- ADD
-- UPDATE
-- DELETE
-
----
-
-### Operation Structure
-- operation_id
-- item_id
-- type
-- payload
-- timestamp (or logical clock)
-
----
-
-## 4. Core Features
-
-### 4.1 Local Storage
-- Store operation log locally
-- Rebuild state by replaying log
-
----
-
-### 4.2 Operation Handling
-- Every change creates an operation
-- No direct state mutation
-
----
-
-### 4.3 Merge Logic
-- Combine operation logs
-- Remove duplicates
-- Apply operations deterministically
-
----
-
-### 4.4 Sync (Basic)
-- Export operations
-- Import operations
-- Apply missing operations
-
----
-
-### 4.5 Encryption (Minimal)
-- Encrypt operations before storing
-- Decrypt before applying
-
----
-
-## 5. Sync Flow
-
-1. Device A exports operations
-2. Device B imports operations
-3. Device B merges logs
-4. Both devices converge
-
----
-
-## 6. Success Scenarios
-
-### Scenario 1
-- Device A adds item
-- Device B adds item
-- Sync → both see both items
-
----
-
-### Scenario 2
-- Device A deletes item
-- Device B updates same item
-- Merge rule applied consistently
-
----
-
-## 7. Constraints
-
-- No central server
-- No real-time communication required
-- No UI complexity
-
----
-
-## 8. Deliverables
-
-- Working CLI or minimal interface
-- Operation log system
-- Merge working across two instances
-- Demonstration of sync flow
-
----
-
-## 9. Completion Criteria
-
-MVP is complete when:
-
-- Two devices can operate independently
-- Data merges without loss
-- System works fully offline
-- Sync works via manual or local method
-
----
+- R1: The system shall support local-first data handling.
+- R2: The system shall support synchronization between two devices.
+- R3: The system shall support merge behavior that prevents data loss.
+- R4: The system shall operate for a single user.
+- R5: The system shall support multiple devices through simulation.
+- R6: The system shall use a basic list data model.
+- R7: The system shall support manual or local synchronization methods.
+- R8: The system shall provide basic encryption for operation data.
+- R9: The system shall not implement multi-user support.
+- R10: The system shall not require real-time synchronization.
+- R11: The system shall not implement an advanced UI.
+- R12: The system shall not implement complex conflict-resolution strategies.
+- R13: The item entity shall include an `id` field that is unique.
+- R14: The item entity shall include a `content` field of type string.
+- R15: The item entity shall include a `deleted` field of type boolean.
+- R16: The system shall support the ADD operation type.
+- R17: The system shall support the UPDATE operation type.
+- R18: The system shall support the DELETE operation type.
+- R19: The operation entity shall include an `operation_id` field.
+- R20: The operation entity shall include an `item_id` field.
+- R21: The operation entity shall include a `type` field.
+- R22: The operation entity shall include a `payload` field.
+- R23: The operation entity shall include a `timestamp` field or logical clock equivalent.
+- R24: The system shall store the operation log locally.
+- R25: The system shall rebuild current state by replaying the operation log.
+- R26: Every state change shall create an operation entry.
+- R27: The system shall not mutate state directly outside operation replay semantics.
+- R28: The merge process shall combine operation logs from participating devices.
+- R29: The merge process shall remove duplicate operations.
+- R30: The merge process shall apply operations deterministically.
+- R31: The system shall export operations for synchronization.
+- R32: The system shall import operations for synchronization.
+- R33: The system shall apply missing operations after import.
+- R34: The system shall encrypt operations before storing them.
+- R35: The system shall decrypt operations before applying them.
+- R36: Device A shall be able to export operations.
+- R37: Device B shall be able to import operations from Device A.
+- R38: Device B shall merge imported operations with its local log.
+- R39: Devices shall converge to identical state after synchronization.
+- R40: When Device A and Device B each add different items before sync, both items shall appear on both devices after sync.
+- R41: When Device A deletes an item and Device B updates the same item before sync, the configured merge rule shall be applied consistently.
+- R42: The system shall not require a central server.
+- R43: The system shall not require real-time communication.
+- R44: The system shall not require UI complexity.
+- R45: The deliverable shall include a working CLI or minimal interface.
+- R46: The deliverable shall include an operation log system.
+- R47: The deliverable shall include a merge demonstration across two instances.
+- R48: The deliverable shall include a synchronization flow demonstration.
+- R49: Two devices shall be able to operate independently prior to synchronization.
+- R50: Merged data shall preserve information without loss.
+- R51: The system shall support fully offline operation for local work.
+- R52: Synchronization shall work through a manual or local method.
