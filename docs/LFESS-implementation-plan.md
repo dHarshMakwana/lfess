@@ -14,11 +14,12 @@
 6. [Phase 3 — Encryption](#phase-3--encryption-internalcrypto)
 7. [Phase 4 — Engine](#phase-4--engine-internalengine)
 8. [Phase 5 — HTTP Server](#phase-5--http-server-server)
-9. [Phase 6 — CLI](#phase-6--cli-cmd)
-10. [Phase 7 — Sync Flow End-to-End](#phase-7--sync-flow-end-to-end)
-11. [Build Order & Milestones](#build-order--milestones)
-12. [Key Libraries](#key-libraries)
-13. [Acceptance Criteria](#acceptance-criteria)
+9. [Phase 6 — Peer-to-Peer LAN Sync](#phase-6--peer-to-peer-lan-sync)
+10. [Phase 7 — CLI](#phase-7--cli-cmd)
+11. [Phase 8 — Sync Flow End-to-End](#phase-8--sync-flow-end-to-end)
+12. [Build Order & Milestones](#build-order--milestones)
+13. [Key Libraries](#key-libraries)
+14. [Acceptance Criteria](#acceptance-criteria)
 
 ---
 
@@ -27,10 +28,10 @@
 LFESS proves three properties at MVP scale:
 
 - **Local-first**: every device operates fully offline using an append-only encrypted operation log
-- **Sync**: two devices exchange operation logs over HTTP on localhost; one pulls from the other
+- **Sync**: two devices exchange operation logs over peer-to-peer HTTP on the same local network (including localhost); one pulls from the other
 - **Merge without data loss**: deduplication by operation ID and a deterministic conflict rule (delete wins) ensure convergence
 
-Single user, multiple devices (simulated via `--data-dir`), no central server, no real-time communication required.
+Single user, multiple devices (simulated via `--data-dir` or run on separate machines on the same network), no central server, no real-time communication required.
 
 ---
 
@@ -50,7 +51,7 @@ lfess/
 │   ├── engine/        # replay, merge, conflict resolution — pure functions
 │   └── crypto/        # age encrypt / decrypt wrappers
 └── server/
-    └── server.go      # HTTP API: GET /ops, POST /ops (optional), GET /health
+    └── server.go      # HTTP API: GET /ops, POST /ops, GET /health
 ```
 
 **Core invariant**: `cmd/` and `server/` are thin shells. All state-manipulation logic lives in `internal/engine`. If you find business logic in a Cobra command or HTTP handler, it belongs in the engine instead.
@@ -398,18 +399,18 @@ Minimal, standard library only. No framework.
 | Method | Path | Behaviour |
 |---|---|---|
 | `GET` | `/ops` | Returns the full encrypted op log as a JSON array of base64 strings |
-| `POST` | `/ops` | (Optional MVP) Accepts ops array, merges locally |
+| `POST` | `/ops` | Accepts ops array, merges locally |
 | `GET` | `/health` | Returns `200 OK` |
 
 ### Configuration
 
-Binds to `localhost` only. Default port `7777`, overridable via `--port` flag or `LFESS_PORT` env var. No auth required for MVP (localhost-only).
+Default host is `127.0.0.1` and default port is `7777`, overridable via `--host`/`--port` flags or `LFESS_HOST`/`LFESS_PORT` env vars. No central server is required.
 
 ### Server setup
 
 ```go
 srv := &http.Server{
-    Addr:         fmt.Sprintf("127.0.0.1:%d", port),
+    Addr:         fmt.Sprintf("%s:%d", host, port),
     ReadTimeout:  10 * time.Second,
     WriteTimeout: 10 * time.Second,
 }
@@ -431,9 +432,41 @@ Both devices must share the same age key for the receiver to decrypt the payload
 
 ---
 
-## Phase 6 — CLI (`cmd/`)
+## Phase 6 — Peer-to-Peer LAN Sync
 
-Use [Cobra](https://github.com/spf13/cobra) for subcommand routing. Global `--data-dir` flag (default `~/.lfess`) lets you run two instances on the same machine by pointing them at different directories — the primary way to simulate two devices during development.
+This phase enables direct multi-device sync over the same local network while preserving the no-central-server architecture.
+
+### Network model
+
+- Pure peer-to-peer communication between devices over HTTP
+- Manual peer addressing (`http://<peer-ip>:<port>`)
+- No relay, coordinator, or central synchronization node
+
+### Host binding for LAN peers
+
+- Add host configurability with loopback as the safe default
+    - `--host` flag, default `127.0.0.1`
+    - `LFESS_HOST` env override
+- Use `--host 0.0.0.0` when accepting sync requests from other machines on the same network
+- Keep existing port controls (`--port`, `LFESS_PORT`)
+
+### API behavior in P2P mode
+
+- `GET /ops` remains full encrypted log export in append order
+- `POST /ops` imports peer operations and triggers local merge through existing store + engine flow
+- No server-side conflict logic outside `engine`
+
+### Security assumptions (MVP)
+
+- Single-user trusted network scope
+- No authentication layer in MVP
+- Operation confidentiality remains protected by age-encrypted log entries
+
+---
+
+## Phase 7 — CLI (`cmd/`)
+
+Use [Cobra](https://github.com/spf13/cobra) for subcommand routing. Global `--data-dir` flag (default `~/.lfess`) lets you run two instances on the same machine by pointing them at different directories, while `--host`/`--port` support serving peers across the same local network.
 
 ### Subcommands
 
@@ -444,18 +477,18 @@ Use [Cobra](https://github.com/spf13/cobra) for subcommand routing. Global `--da
 | `lfess delete <id>` | Creates a DELETE operation for the given item ID |
 | `lfess list` | Replays log, prints non-deleted items with their IDs |
 | `lfess sync <peer-addr>` | Fetches `/ops` from peer, merges, writes missing ops to local log |
-| `lfess serve [--port N]` | Starts the HTTP server |
+| `lfess serve [--host H] [--port N]` | Starts the HTTP server |
 
-### Example session — two devices on one machine
+### Example session — two devices on the same network
 
 ```bash
 # Terminal 1 — Device A
-lfess --data-dir /tmp/a serve --port 7777 &
+lfess --data-dir /tmp/a serve --host 0.0.0.0 --port 7777 &
 lfess --data-dir /tmp/a add "buy oat milk"
 
-# Terminal 2 — Device B
+# Terminal 2 — Device B (same LAN)
 lfess --data-dir /tmp/b add "finish the RFC"
-lfess --data-dir /tmp/b sync http://localhost:7777
+lfess --data-dir /tmp/b sync http://192.168.1.10:7777
 
 # Both devices now have both items
 lfess --data-dir /tmp/a list
@@ -464,7 +497,7 @@ lfess --data-dir /tmp/b list
 
 ---
 
-## Phase 7 — Sync Flow End-to-End
+## Phase 8 — Sync Flow End-to-End
 
 ```
 Device A                              Device B
@@ -503,9 +536,10 @@ Build strictly in dependency order — each layer is testable before the next is
 | **M1** | `internal/model` + `internal/crypto` | Types compile; encrypt/decrypt round-trip passes unit tests |
 | **M2** | `internal/store` | Append and read work; two concurrent appends produce no interleaving |
 | **M3** | `internal/engine` | All table-driven tests pass including both spec scenarios |
-| **M4** | `server/` | Server starts; `curl localhost:7777/ops` returns valid JSON |
-| **M5** | `cmd/` | All subcommands wired; two local instances demonstrate sync manually |
-| **M6** | Integration | Scripted two-device scenario passes end-to-end |
+| **M4** | `server/` | Server starts; `curl http://127.0.0.1:7777/ops` returns valid JSON |
+| **M5** | `server/` + `cmd/` | Two machines on the same local network sync directly with no central server |
+| **M6** | `cmd/` | All subcommands wired; local and same-network sync demonstrate convergence |
+| **M7** | Integration | Scripted two-device scenario passes end-to-end |
 
 ---
 
@@ -574,6 +608,7 @@ No ORM, no database driver, no framework. Minimal dependency surface is consiste
 ### AC-7 — HTTP API
 
 - [ ] `GET /ops` returns a valid JSON array of base64-encoded ciphertexts in append order (no sorting, no filtering, no deduplication server-side)
+- [ ] `POST /ops` accepts operation payloads from peers and imports missing operations locally
 - [ ] The response contains exactly the same lines as `ops.log`, in the same order
 - [ ] `GET /health` returns HTTP 200
 - [ ] Server handles concurrent requests without data races (verified with `-race` flag)
@@ -600,6 +635,13 @@ No ORM, no database driver, no framework. Minimal dependency surface is consiste
 - [ ] A `DELETE` operation does not remove earlier `ADD`/`UPDATE` ops from the log
 - [ ] A sync that imports zero new ops leaves `ops.log` byte-for-byte identical to before the sync
 
+### AC-11 — Same-network peer-to-peer sync
+
+- [ ] Device A and Device B on the same local network can sync directly using `lfess sync http://<peer-ip>:<port>`
+- [ ] Both devices can serve and sync without any centralized coordinator
+- [ ] Host binding supports both loopback default (`127.0.0.1`) and LAN mode (`0.0.0.0`)
+- [ ] Scenario 1 and Scenario 2 converge identically in same-network mode
+
 ---
 
-*MVP is complete when all ten acceptance criteria are green.*
+*MVP is complete when all eleven acceptance criteria are green.*
