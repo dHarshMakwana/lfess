@@ -2,6 +2,8 @@ package crypto
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -78,26 +80,80 @@ func Decrypt(ciphertext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	id, err := EnsureX25519Identity(dir)
+	ids, err := decryptionIdentities(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	r, err := age.Decrypt(bytes.NewReader(ciphertext), id)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt: %w", err)
+	var lastErr error
+	for _, id := range ids {
+		r, err := age.Decrypt(bytes.NewReader(ciphertext), id)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		pt, err := io.ReadAll(r)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt read: %w", err)
+		}
+		return pt, nil
 	}
-	pt, err := io.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt read: %w", err)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no identity matched any of the recipients")
 	}
-	return pt, nil
+	return nil, fmt.Errorf("decrypt: %w", lastErr)
 }
 
 const KeyFileName = "key.age"
+const PeerIdentityDirName = "peer-keys"
 
 func keyPath(dataDir string) string {
 	return filepath.Join(dataDir, KeyFileName)
+}
+
+func peerIdentityDir(dataDir string) string {
+	return filepath.Join(dataDir, PeerIdentityDirName)
+}
+
+// IdentityString returns the local node's X25519 identity string.
+func IdentityString(dataDir string) (string, error) {
+	id, err := EnsureX25519Identity(dataDir)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(id.String()), nil
+}
+
+// ImportPeerIdentity stores an additional peer identity that can decrypt
+// payloads encrypted by that peer.
+func ImportPeerIdentity(dataDir, identityString string) error {
+	if strings.TrimSpace(dataDir) == "" {
+		return fmt.Errorf("key: data dir is required")
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return fmt.Errorf("key: create data dir: %w", err)
+	}
+
+	identityString = strings.TrimSpace(identityString)
+	if identityString == "" {
+		return fmt.Errorf("key: peer identity is required")
+	}
+	id, err := age.ParseX25519Identity(identityString)
+	if err != nil {
+		return fmt.Errorf("key: parse peer identity: %w", err)
+	}
+
+	peerDir := peerIdentityDir(dataDir)
+	if err := os.MkdirAll(peerDir, 0o700); err != nil {
+		return fmt.Errorf("key: create peer identity dir: %w", err)
+	}
+
+	sum := sha256.Sum256([]byte(strings.TrimSpace(id.String())))
+	path := filepath.Join(peerDir, hex.EncodeToString(sum[:])+".age")
+	if err := os.WriteFile(path, []byte(id.String()+"\n"), 0o600); err != nil {
+		return fmt.Errorf("key: write peer identity: %w", err)
+	}
+	return nil
 }
 
 // EnsureX25519Identity loads an age X25519 identity from <dataDir>/key.age, or creates
@@ -166,4 +222,48 @@ func EnsureX25519Identity(dataDir string) (*age.X25519Identity, error) {
 	}
 
 	return id, nil
+}
+
+func decryptionIdentities(dataDir string) ([]*age.X25519Identity, error) {
+	local, err := EnsureX25519Identity(dataDir)
+	if err != nil {
+		return nil, err
+	}
+
+	ids := []*age.X25519Identity{local}
+	seen := map[string]struct{}{strings.TrimSpace(local.String()): {}}
+
+	peerDir := peerIdentityDir(dataDir)
+	entries, err := os.ReadDir(peerDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ids, nil
+		}
+		return nil, fmt.Errorf("key: read peer identities: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(peerDir, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("key: read peer identity: %w", err)
+		}
+		s := strings.TrimSpace(string(b))
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		id, err := age.ParseX25519Identity(s)
+		if err != nil {
+			return nil, fmt.Errorf("key: parse peer identity: %w", err)
+		}
+		seen[s] = struct{}{}
+		ids = append(ids, id)
+	}
+
+	return ids, nil
 }

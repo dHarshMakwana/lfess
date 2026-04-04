@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/dHarshMakwana/lfess/internal/crypto"
 	"github.com/dHarshMakwana/lfess/internal/engine"
@@ -19,11 +20,13 @@ import (
 const opsLogFileName = "ops.log"
 
 var ErrInvalidImportPayload = errors.New("invalid import payload")
+var ErrOperationIDCollision = errors.New("operation id collision")
 
 // OpsLog appends and reads newline-delimited JSON operations.
 // Phase 2: each line is base64(age ciphertext) for a single JSON operation.
 type OpsLog struct {
 	path string
+	mu   sync.Mutex
 }
 
 func NewOpsLog(dataDir string) (*OpsLog, error) {
@@ -39,6 +42,12 @@ func NewOpsLog(dataDir string) (*OpsLog, error) {
 
 // Append writes exactly one operation as a single line and fsyncs.
 func (l *OpsLog) Append(op model.Operation) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.appendUnlocked(op)
+}
+
+func (l *OpsLog) appendUnlocked(op model.Operation) error {
 	if err := op.ValidateBasic(); err != nil {
 		return err
 	}
@@ -111,14 +120,42 @@ func (l *OpsLog) ReadEncryptedLines() ([]string, error) {
 // the Merge flow. It appends only operations that are missing locally and
 // returns how many were appended.
 func (l *OpsLog) ImportEncryptedLines(lines []string) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	remoteOps, err := decodeEncryptedLines(lines)
 	if err != nil {
 		return 0, err
 	}
 
-	localOps, err := l.ReadAll()
+	localOps, err := l.readDecoded()
 	if err != nil {
 		return 0, fmt.Errorf("read local ops: %w", err)
+	}
+
+	fingerprints := make(map[string]string, len(localOps)+len(remoteOps))
+	for _, op := range localOps {
+		fp, err := operationFingerprint(op)
+		if err != nil {
+			return 0, fmt.Errorf("fingerprint local op %q: %w", op.OperationID, err)
+		}
+		if existing, ok := fingerprints[op.OperationID]; ok && existing != fp {
+			return 0, fmt.Errorf("%w: operation id %q has conflicting payload", ErrOperationIDCollision, op.OperationID)
+		}
+		fingerprints[op.OperationID] = fp
+	}
+	for _, op := range remoteOps {
+		fp, err := operationFingerprint(op)
+		if err != nil {
+			return 0, fmt.Errorf("fingerprint remote op %q: %w", op.OperationID, err)
+		}
+		if existing, ok := fingerprints[op.OperationID]; ok {
+			if existing != fp {
+				return 0, fmt.Errorf("%w: operation id %q has conflicting payload", ErrOperationIDCollision, op.OperationID)
+			}
+			continue
+		}
+		fingerprints[op.OperationID] = fp
 	}
 
 	merged := engine.Merge(localOps, remoteOps)
@@ -135,7 +172,7 @@ func (l *OpsLog) ImportEncryptedLines(lines []string) (int, error) {
 		if _, ok := seen[op.OperationID]; ok {
 			continue
 		}
-		if err := l.Append(op); err != nil {
+		if err := l.appendUnlocked(op); err != nil {
 			return imported, fmt.Errorf("append imported op %q: %w", op.OperationID, err)
 		}
 		seen[op.OperationID] = struct{}{}
@@ -216,12 +253,24 @@ func (l *OpsLog) readDecoded() ([]model.Operation, error) {
 			fmt.Fprintf(os.Stderr, "warning: ops.log line %d json unmarshal failed: %v; skipping\n", lineNo, err)
 			continue
 		}
+		if err := op.ValidateBasic(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: ops.log line %d operation invalid: %v; skipping\n", lineNo, err)
+			continue
+		}
 		out = append(out, op)
 	}
 	if err := s.Err(); err != nil {
 		return nil, fmt.Errorf("scan ops log: %w", err)
 	}
 	return out, nil
+}
+
+func operationFingerprint(op model.Operation) (string, error) {
+	b, err := json.Marshal(op)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // Path returns the on-disk file path.

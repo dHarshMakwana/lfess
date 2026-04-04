@@ -35,67 +35,71 @@ func Merge(local, remote []model.Operation) []model.Operation {
 // Merge). Replay does NOT call Merge internally.
 //
 // Rules (enforced here; Merge is conflict-logic-free):
-//  1. If no ADD exists for an ItemID → the item does not appear in state
-//     (orphan UPDATEs and DELETEs are silently ignored).
-//  2. If an ADD exists and a DELETE that follows an ADD exists → Item{Deleted: true}.
-//     A DELETE is only "effective" when at least one ADD precedes it in op order;
-//     a DELETE that arrives before any ADD for the same ItemID is treated as an
-//     orphan and does not suppress a subsequent ADD (AC-4 out-of-order import).
-//  3. Otherwise → content is taken from the ADD, then UPDATEs are applied in
-//     ascending Timestamp order (last UPDATE wins within a single item).
+//  1. If no ADD exists for an ItemID, the item does not appear in state.
+//  2. A DELETE is effective only after at least one ADD in canonical op order.
+//  3. Canonical op order is deterministic per item:
+//     Timestamp asc, then OperationID asc, then DeviceID asc, then Type asc.
+//     This prevents merge-order-dependent replay outcomes.
+//  4. If an effective DELETE exists, the item is returned as deleted.
+//  5. Otherwise, ADD sets base content and UPDATE overwrites content while item
+//     exists in canonical order.
 func Replay(ops []model.Operation) map[string]model.Item {
-	type itemState struct {
-		hasADD          bool
-		effectiveDelete bool // DELETE seen after at least one ADD in op order
-		content         string
-		updates         []model.Operation
-	}
-
-	states := make(map[string]*itemState)
-
+	byItem := make(map[string][]model.Operation)
 	for _, op := range ops {
-		st, ok := states[op.ItemID]
-		if !ok {
-			st = &itemState{}
-			states[op.ItemID] = st
-		}
-		switch op.Type {
-		case model.OperationAdd:
-			st.hasADD = true
-			if c, ok := op.Payload["content"].(string); ok {
-				st.content = c
-			}
-		case model.OperationUpdate:
-			st.updates = append(st.updates, op)
-		case model.OperationDelete:
-			// Only effective when an ADD already exists in op order; otherwise
-			// this is an orphan DELETE (out-of-order import) and is ignored.
-			if st.hasADD {
-				st.effectiveDelete = true
-			}
-		}
+		byItem[op.ItemID] = append(byItem[op.ItemID], op)
 	}
 
-	out := make(map[string]model.Item, len(states))
-	for itemID, st := range states {
-		if !st.hasADD {
+	out := make(map[string]model.Item, len(byItem))
+	for itemID, itemOps := range byItem {
+		sort.Slice(itemOps, func(i, j int) bool {
+			left := itemOps[i]
+			right := itemOps[j]
+
+			if !left.Timestamp.Equal(right.Timestamp) {
+				return left.Timestamp.Before(right.Timestamp)
+			}
+			if left.OperationID != right.OperationID {
+				return left.OperationID < right.OperationID
+			}
+			if left.DeviceID != right.DeviceID {
+				return left.DeviceID < right.DeviceID
+			}
+			return string(left.Type) < string(right.Type)
+		})
+
+		hasADD := false
+		effectiveDelete := false
+		content := ""
+
+		for _, op := range itemOps {
+			switch op.Type {
+			case model.OperationAdd:
+				hasADD = true
+				if c, ok := op.Payload["content"].(string); ok {
+					content = c
+				}
+			case model.OperationUpdate:
+				if !hasADD {
+					continue
+				}
+				if c, ok := op.Payload["content"].(string); ok {
+					content = c
+				}
+			case model.OperationDelete:
+				if hasADD {
+					effectiveDelete = true
+				}
+			}
+		}
+
+		if !hasADD {
 			// Rule 1: no ADD → item does not appear in state
 			continue
 		}
-		if st.effectiveDelete {
+		if effectiveDelete {
 			// Rule 2: delete wins
 			out[itemID] = model.Item{ID: itemID, Deleted: true}
 			continue
-		}
-		// Rule 3: apply UPDATEs in ascending Timestamp order
-		sort.Slice(st.updates, func(i, j int) bool {
-			return st.updates[i].Timestamp.Before(st.updates[j].Timestamp)
-		})
-		content := st.content
-		for _, u := range st.updates {
-			if c, ok := u.Payload["content"].(string); ok {
-				content = c
-			}
 		}
 		out[itemID] = model.Item{ID: itemID, Content: content}
 	}
