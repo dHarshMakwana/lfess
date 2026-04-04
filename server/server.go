@@ -33,7 +33,6 @@ type Config struct {
 
 type Service struct {
 	log             *store.OpsLog
-	deviceID        string
 	server          *http.Server
 	shutdownTimeout time.Duration
 }
@@ -64,25 +63,15 @@ func New(cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	deviceID, err := store.EnsureDeviceID(cfg.DataDir)
-	if err != nil {
-		return nil, err
-	}
 
 	svc := &Service{
 		log:             log,
-		deviceID:        deviceID,
 		shutdownTimeout: shutdownTimeout,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", svc.handleHealth)
-	mux.HandleFunc("/identity", svc.handleIdentity)
-	mux.HandleFunc("/connect", svc.handleConnect)
 	mux.HandleFunc("/ops", svc.handleOps)
-	mux.HandleFunc("/notes", svc.handleNotes)
-	mux.HandleFunc("/notes/", svc.handleNoteByID)
-	mux.HandleFunc("/demo", svc.handleDemo)
 
 	svc.server = &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", host, cfg.Port),
@@ -155,12 +144,6 @@ func normalizeServeError(err error) error {
 }
 
 func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
-	setCORSHeaders(w, http.MethodGet)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, http.MethodGet)
 		return
@@ -172,12 +155,6 @@ func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleOps(w http.ResponseWriter, r *http.Request) {
-	setCORSHeaders(w, http.MethodGet, http.MethodPost)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
 	switch r.Method {
 	case http.MethodGet:
 		s.handleGetOps(w)
@@ -244,23 +221,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) error {
 	w.WriteHeader(status)
 	_, err = w.Write(append(payload, '\n'))
 	return err
-}
-
-func setCORSHeaders(w http.ResponseWriter, allowedMethods ...string) {
-	methods := append([]string{}, allowedMethods...)
-	if !containsMethod(methods, http.MethodOptions) {
-		methods = append(methods, http.MethodOptions)
-	}
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ", "))
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-}
-
-func containsMethod(methods []string, method string) bool {
-	for _, candidate := range methods {
-		if candidate == method {
-			return true
-		}
-	}
-	return false
 }
