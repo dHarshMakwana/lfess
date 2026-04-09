@@ -1,0 +1,8 @@
+{
+  "name": "lfess",
+  "description": "Local-first encrypted sync for small list data across devices.",
+  "github_url": "https://github.com/dHarshMakwana/lfess",
+  "license": "MIT",
+  "go_module": "github.com/dHarshMakwana/lfess",
+  "go_version": "1.24.6"
+}
