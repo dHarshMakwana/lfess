@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dHarshMakwana/lfess/internal/bootstrap"
 	"github.com/dHarshMakwana/lfess/internal/store"
 )
 
@@ -33,6 +35,7 @@ type Config struct {
 
 type Service struct {
 	log             *store.OpsLog
+	bootstrap       *bootstrap.Manager
 	server          *http.Server
 	shutdownTimeout time.Duration
 }
@@ -64,14 +67,22 @@ func New(cfg Config) (*Service, error) {
 		return nil, err
 	}
 
+	bm, err := bootstrap.NewManager(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+
 	svc := &Service{
 		log:             log,
+		bootstrap:       bm,
 		shutdownTimeout: shutdownTimeout,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", svc.handleHealth)
 	mux.HandleFunc("/ops", svc.handleOps)
+	mux.HandleFunc("/bootstrap/session", svc.handleBootstrapSession)
+	mux.HandleFunc("/bootstrap/exchange", svc.handleBootstrapExchange)
 
 	svc.server = &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", host, cfg.Port),
@@ -203,6 +214,108 @@ func (s *Service) handlePostOps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := writeJSON(w, http.StatusOK, map[string]int{"imported": imported}); err != nil {
+		http.Error(w, fmt.Sprintf("encode response: %v", err), http.StatusInternalServerError)
+	}
+}
+
+type bootstrapSessionRequest struct {
+	TTLSeconds int64 `json:"ttl_seconds"`
+}
+
+type bootstrapSessionResponse struct {
+	SessionID string    `json:"session_id"`
+	PairCode  string    `json:"pair_code"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func (s *Service) handleBootstrapSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	defer r.Body.Close()
+
+	var req bootstrapSessionRequest
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "invalid request payload", http.StatusBadRequest)
+		return
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid request payload", http.StatusBadRequest)
+		return
+	}
+
+	res, err := s.bootstrap.StartSession(time.Duration(req.TTLSeconds) * time.Second)
+	if err != nil {
+		if errors.Is(err, bootstrap.ErrInvalidTTL) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Error(w, fmt.Sprintf("start bootstrap session: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if err := writeJSON(w, http.StatusOK, bootstrapSessionResponse{
+		SessionID: res.SessionID,
+		PairCode:  res.PairCode,
+		ExpiresAt: res.ExpiresAt,
+	}); err != nil {
+		http.Error(w, fmt.Sprintf("encode response: %v", err), http.StatusInternalServerError)
+	}
+}
+
+type bootstrapExchangeRequest struct {
+	SessionID          string `json:"session_id"`
+	Proof              string `json:"proof"`
+	EphemeralRecipient string `json:"ephemeral_recipient"`
+}
+
+func (s *Service) handleBootstrapExchange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	defer r.Body.Close()
+
+	var req bootstrapExchangeRequest
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "invalid request payload", http.StatusBadRequest)
+		return
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid request payload", http.StatusBadRequest)
+		return
+	}
+
+	ciphertext, err := s.bootstrap.Exchange(bootstrap.ExchangeRequest{
+		SessionID:          req.SessionID,
+		Proof:              req.Proof,
+		EphemeralRecipient: req.EphemeralRecipient,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, bootstrap.ErrInvalidExchangeRequest), errors.Is(err, bootstrap.ErrInvalidRecipient):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		case errors.Is(err, bootstrap.ErrInvalidSession), errors.Is(err, bootstrap.ErrSessionExpired), errors.Is(err, bootstrap.ErrSessionUsed), errors.Is(err, bootstrap.ErrInvalidProof):
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		case errors.Is(err, bootstrap.ErrTooManyAttempts):
+			http.Error(w, err.Error(), http.StatusTooManyRequests)
+			return
+		default:
+			http.Error(w, fmt.Sprintf("bootstrap exchange: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := writeJSON(w, http.StatusOK, map[string]string{
+		"payload": base64.StdEncoding.EncodeToString(ciphertext),
+	}); err != nil {
 		http.Error(w, fmt.Sprintf("encode response: %v", err), http.StatusInternalServerError)
 	}
 }
