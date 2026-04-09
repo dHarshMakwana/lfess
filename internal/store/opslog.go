@@ -44,6 +44,7 @@ func NewOpsLog(dataDir string) (*OpsLog, error) {
 func (l *OpsLog) Append(op model.Operation) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.configureCryptoDataDir()
 	return l.appendUnlocked(op)
 }
 
@@ -81,6 +82,7 @@ func (l *OpsLog) appendUnlocked(op model.Operation) error {
 // ReadAll returns operations in file order, skipping corrupted/unreadable lines.
 // Any skipped line prints a warning to stderr containing the 1-based line number.
 func (l *OpsLog) ReadAll() ([]model.Operation, error) {
+	l.configureCryptoDataDir()
 	ops, err := l.readDecoded()
 	if err != nil {
 		return nil, err
@@ -122,6 +124,7 @@ func (l *OpsLog) ReadEncryptedLines() ([]string, error) {
 func (l *OpsLog) ImportEncryptedLines(lines []string) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.configureCryptoDataDir()
 
 	remoteOps, err := decodeEncryptedLines(lines)
 	if err != nil {
@@ -214,6 +217,7 @@ func decodeEncryptedLines(lines []string) ([]model.Operation, error) {
 }
 
 func (l *OpsLog) readDecoded() ([]model.Operation, error) {
+	l.configureCryptoDataDir()
 	f, err := os.Open(l.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -263,6 +267,10 @@ func (l *OpsLog) readDecoded() ([]model.Operation, error) {
 		return nil, fmt.Errorf("scan ops log: %w", err)
 	}
 	return out, nil
+}
+
+func (l *OpsLog) configureCryptoDataDir() {
+	crypto.SetDataDir(filepath.Dir(l.path))
 }
 
 func operationFingerprint(op model.Operation) (string, error) {

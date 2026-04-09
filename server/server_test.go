@@ -180,6 +180,32 @@ func TestOps_PostInvalidPayloadReturnsBadRequest(t *testing.T) {
 	})
 }
 
+func TestOps_PostRejectsTrailingJSON(t *testing.T) {
+	localDir := t.TempDir()
+	localLog, err := store.NewOpsLog(localDir)
+	require.NoError(t, err)
+	deviceID, err := store.EnsureDeviceID(localDir)
+	require.NoError(t, err)
+	op, err := model.NewAddOperation(deviceID, "item-1", "hello", time.Unix(40, 0).UTC())
+	require.NoError(t, err)
+	require.NoError(t, localLog.Append(op))
+
+	lines, err := localLog.ReadEncryptedLines()
+	require.NoError(t, err)
+	body, err := json.Marshal(lines)
+	require.NoError(t, err)
+	body = append(body, []byte(` {"extra":true}`)...)
+
+	svc, err := New(Config{DataDir: localDir})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/ops", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusBadRequest, rr.Code)
+}
+
 func TestOps_ConcurrentRequests(t *testing.T) {
 	localDir := t.TempDir()
 	localLog, err := store.NewOpsLog(localDir)

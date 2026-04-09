@@ -15,11 +15,12 @@
 7. [Phase 4 — Engine](#phase-4--engine-internalengine)
 8. [Phase 5 — HTTP Server](#phase-5--http-server-server)
 9. [Phase 6 — Peer-to-Peer LAN Sync](#phase-6--peer-to-peer-lan-sync)
-10. [Phase 7 — CLI](#phase-7--cli-cmd)
-11. [Phase 8 — Sync Flow End-to-End](#phase-8--sync-flow-end-to-end)
-12. [Build Order & Milestones](#build-order--milestones)
-13. [Key Libraries](#key-libraries)
-14. [Acceptance Criteria](#acceptance-criteria)
+10. [Phase 7 — One-Time Authenticated LAN Bootstrap](#phase-7--one-time-authenticated-lan-bootstrap)
+11. [Phase 8 — CLI](#phase-8--cli-cmd)
+12. [Phase 9 — Sync Flow End-to-End](#phase-9--sync-flow-end-to-end)
+13. [Build Order & Milestones](#build-order--milestones)
+14. [Key Libraries](#key-libraries)
+15. [Acceptance Criteria](#acceptance-criteria)
 
 ---
 
@@ -28,7 +29,7 @@
 LFESS proves three properties at MVP scale:
 
 - **Local-first**: every device operates fully offline using an append-only encrypted operation log
-- **Sync**: two devices exchange operation logs over peer-to-peer HTTP on the same local network (including localhost); one pulls from the other
+- **Sync**: two devices exchange operation logs over peer-to-peer HTTP on the same local network (including localhost); one pulls from the other after one-time authenticated bootstrap
 - **Merge without data loss**: deduplication by operation ID and a deterministic conflict rule (delete wins) ensure convergence
 
 Single user, multiple devices (simulated via `--data-dir` or run on separate machines on the same network), no central server, no real-time communication required.
@@ -43,15 +44,17 @@ lfess/
 ├── cmd/
 │   ├── root.go        # cobra setup, global --data-dir flag
 │   ├── item.go        # add / update / delete subcommands
+│   ├── pair.go        # one-time authenticated bootstrap commands
 │   ├── list.go        # view current state
 │   └── sync.go        # trigger pull sync from peer
 ├── internal/
 │   ├── model/         # types: Operation, Item, enums
 │   ├── store/         # append-only JSON log, safe file writes
 │   ├── engine/        # replay, merge, conflict resolution — pure functions
+│   ├── bootstrap/     # one-time LAN bootstrap sessions + exchange flow
 │   └── crypto/        # age encrypt / decrypt wrappers
 └── server/
-    └── server.go      # HTTP API: GET /ops, POST /ops, GET /health
+    └── server.go      # HTTP API: /ops, /health, bootstrap exchange endpoints
 ```
 
 **Core invariant**: `cmd/` and `server/` are thin shells. All state-manipulation logic lives in `internal/engine`. If you find business logic in a Cobra command or HTTP handler, it belongs in the engine instead.
@@ -298,7 +301,7 @@ Read all lines, base64-decode, age-decrypt, unmarshal JSON. Return `[]Operation`
 
 ### Key management
 
-On first run, generate an age X25519 keypair and write to `~/.lfess/key.age` (chmod 600). For MVP, both devices share the same key file (copied manually or by pointing at the same `--data-dir`).
+On first run, generate an age X25519 keypair and write to `~/.lfess/key.age` (chmod 600). For multi-device sync, new devices obtain the existing sync key through one-time authenticated LAN bootstrap (Phase 7). Manual key copy remains a recovery fallback.
 
 ### Per-operation encryption
 
@@ -428,7 +431,7 @@ Run in a goroutine. Catch `SIGINT` / `SIGTERM` for graceful shutdown via `srv.Sh
 
 The receiving device is responsible for all decryption, deduplication (`Merge`), and state derivation (`Replay`). The server is a dumb log reader — it applies no business logic to the response.
 
-Both devices must share the same age key for the receiver to decrypt the payload.
+Both devices must share the same age key for the receiver to decrypt the payload. Phase 7 defines the authenticated bootstrap flow that provisions this key to new devices.
 
 ---
 
@@ -459,12 +462,58 @@ This phase enables direct multi-device sync over the same local network while pr
 ### Security assumptions (MVP)
 
 - Single-user trusted network scope
-- No authentication layer in MVP
+- Sync transport (`/ops`) has no per-request auth in MVP
+- Device onboarding authentication is handled by one-time bootstrap in Phase 7
 - Operation confidentiality remains protected by age-encrypted log entries
 
 ---
 
-## Phase 7 — CLI (`cmd/`)
+## Phase 7 — One-Time Authenticated LAN Bootstrap
+
+This phase removes manual `key.age` copying from the normal onboarding path by introducing a single-use, authenticated bootstrap flow over LAN.
+
+### Design goals
+
+- Pair a new device in one explicit user action
+- Keep bootstrap sessions short-lived and single-use
+- Avoid persistent bootstrap secrets on disk
+- Keep regular sync (`GET /ops` / `POST /ops`) unchanged
+
+### Bootstrap flow
+
+1. **Trusted device starts pairing session**
+    - Command: `lfess pair start --ttl 2m`
+    - Generates:
+      - random `session_id`
+      - one-time pairing code (shared out-of-band)
+      - in-memory expiry and single-use state
+
+2. **New device requests bootstrap**
+    - Command: `lfess pair join http://<peer-ip>:<port> --code <pair-code>`
+    - Generates an ephemeral age keypair for response encryption
+    - Calls bootstrap exchange endpoint with `session_id`, pairing code proof, and ephemeral recipient
+
+3. **Trusted device authenticates and returns encrypted key material**
+    - Validates session exists, is unexpired, and unused
+    - Validates pairing code proof
+    - Encrypts local `key.age` payload to requester ephemeral recipient
+    - Marks session used and returns encrypted bootstrap payload
+
+4. **New device installs key and finalizes**
+    - Decrypts bootstrap payload using ephemeral private key
+    - Writes `key.age` with `0600`
+    - Future `lfess sync` calls work without manual key copying
+
+### Failure and safety requirements
+
+- Invalid, expired, or replayed sessions are rejected
+- Pairing code attempts are rate-limited
+- Bootstrap session state is memory-only and auto-expires
+- Key file writes are atomic and permissions-checked
+
+---
+
+## Phase 8 — CLI (`cmd/`)
 
 Use [Cobra](https://github.com/spf13/cobra) for subcommand routing. Global `--data-dir` flag (default `~/.lfess`) lets you run two instances on the same machine by pointing them at different directories, while `--host`/`--port` support serving peers across the same local network.
 
@@ -476,6 +525,8 @@ Use [Cobra](https://github.com/spf13/cobra) for subcommand routing. Global `--da
 | `lfess update <id> <content>` | Creates an UPDATE operation for the given item ID |
 | `lfess delete <id>` | Creates a DELETE operation for the given item ID |
 | `lfess list` | Replays log, prints non-deleted items with their IDs |
+| `lfess pair start [--ttl D]` | Starts a one-time authenticated bootstrap session and prints pairing details |
+| `lfess pair join <peer-addr> --code <code>` | Joins bootstrap session, imports `key.age`, and marks session consumed |
 | `lfess sync <peer-addr>` | Fetches `/ops` from peer, merges, writes missing ops to local log |
 | `lfess serve [--host H] [--port N]` | Starts the HTTP server |
 
@@ -484,9 +535,12 @@ Use [Cobra](https://github.com/spf13/cobra) for subcommand routing. Global `--da
 ```bash
 # Terminal 1 — Device A
 lfess --data-dir /tmp/a serve --host 0.0.0.0 --port 7777 &
+lfess --data-dir /tmp/a pair start --ttl 2m
+# prints one-time pairing code
 lfess --data-dir /tmp/a add "buy oat milk"
 
 # Terminal 2 — Device B (same LAN)
+lfess --data-dir /tmp/b pair join http://192.168.1.10:7777 --code <pair-code>
 lfess --data-dir /tmp/b add "finish the RFC"
 lfess --data-dir /tmp/b sync http://192.168.1.10:7777
 
@@ -497,13 +551,16 @@ lfess --data-dir /tmp/b list
 
 ---
 
-## Phase 8 — Sync Flow End-to-End
+## Phase 9 — Sync Flow End-to-End
 
 ```
 Device A                              Device B
 ─────────────────────────────────────────────────────
 Operate offline                       Operate offline
 Append ops to local log               Append ops to local log
+
+lfess pair start --ttl 2m             lfess pair join http://A:7777 --code ******
+    ← ← ← bootstrap exchange (single-use, authenticated) → → →
 
                                       lfess sync http://A:7777
   ← ← ←  GET /ops  ← ← ← ← ← ← ← ← ←
@@ -537,9 +594,10 @@ Build strictly in dependency order — each layer is testable before the next is
 | **M2** | `internal/store` | Append and read work; two concurrent appends produce no interleaving |
 | **M3** | `internal/engine` | All table-driven tests pass including both spec scenarios |
 | **M4** | `server/` | Server starts; `curl http://127.0.0.1:7777/ops` returns valid JSON |
-| **M5** | `server/` + `cmd/` | Two machines on the same local network sync directly with no central server |
-| **M6** | `cmd/` | All subcommands wired; local and same-network sync demonstrate convergence |
-| **M7** | Integration | Scripted two-device scenario passes end-to-end |
+| **M5** | `server/` + `internal/crypto` + `cmd/` | One-time authenticated bootstrap provisions `key.age` to a new device using single-use expiring sessions |
+| **M6** | `server/` + `cmd/` | Two machines on the same local network sync directly with no central server and no manual key copy |
+| **M7** | `cmd/` | All subcommands wired, including pairing, local state, and LAN sync |
+| **M8** | Integration | Scripted two-device scenario (pair then sync) passes end-to-end |
 
 ---
 
@@ -549,6 +607,7 @@ Build strictly in dependency order — each layer is testable before the next is
 |---|---|
 | CLI | `github.com/spf13/cobra` |
 | Age encryption | `filippo.io/age` |
+| Bootstrap token/session auth | `crypto/hmac`, `crypto/sha256`, `crypto/rand` (stdlib) |
 | Unique IDs | `github.com/oklog/ulid/v2` |
 | Assertions in tests | `github.com/stretchr/testify/assert` |
 | HTTP | `net/http` (stdlib) |
@@ -614,7 +673,15 @@ No ORM, no database driver, no framework. Minimal dependency surface is consiste
 - [ ] Server handles concurrent requests without data races (verified with `-race` flag)
 - [ ] Server shuts down cleanly on `SIGINT` without dropping in-flight requests
 
-### AC-8 — CLI usability
+### AC-8 — One-time authenticated LAN bootstrap
+
+- [ ] Trusted device can start a bootstrap session that emits a single-use pairing code and expires automatically
+- [ ] New device can join using valid pairing details and receive `key.age` securely
+- [ ] Invalid, expired, or already-used pairing sessions are rejected with clear errors
+- [ ] Bootstrap success writes `key.age` with mode `0600`, and subsequent runs reuse it
+- [ ] After bootstrap, same-network sync works without manual key copy
+
+### AC-9 — CLI usability
 
 - [ ] `lfess list` shows only non-deleted items with their IDs and content
 - [ ] `lfess list` output is consistent with a fresh replay of the local log
@@ -622,20 +689,20 @@ No ORM, no database driver, no framework. Minimal dependency surface is consiste
 - [ ] `lfess sync <addr>` exits non-zero if decryption of any received op fails
 - [ ] All commands respect `--data-dir` and do not read from or write to `~/.lfess` when the flag is set
 
-### AC-9 — Offline operation
+### AC-10 — Offline operation
 
 - [ ] All commands except `sync` and `serve` work with no network access
 - [ ] State is consistent after 100 add/update/delete operations with no sync (stress test)
 - [ ] Two instances running with separate `--data-dir` values do not share any state until `sync` is explicitly called
 
-### AC-10 — No history mutation
+### AC-11 — No history mutation
 
 - [ ] The line count of `ops.log` never decreases after any operation
 - [ ] No existing line in `ops.log` is ever modified after it is written (verified by checksumming all lines before and after a `sync`)
 - [ ] A `DELETE` operation does not remove earlier `ADD`/`UPDATE` ops from the log
 - [ ] A sync that imports zero new ops leaves `ops.log` byte-for-byte identical to before the sync
 
-### AC-11 — Same-network peer-to-peer sync
+### AC-12 — Same-network peer-to-peer sync
 
 - [ ] Device A and Device B on the same local network can sync directly using `lfess sync http://<peer-ip>:<port>`
 - [ ] Both devices can serve and sync without any centralized coordinator
@@ -644,4 +711,4 @@ No ORM, no database driver, no framework. Minimal dependency surface is consiste
 
 ---
 
-*MVP is complete when all eleven acceptance criteria are green.*
+*MVP is complete when all twelve acceptance criteria are green.*

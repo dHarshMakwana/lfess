@@ -186,7 +186,8 @@ func (s *Service) handlePostOps(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request payload", http.StatusBadRequest)
 		return
 	}
-	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		http.Error(w, "invalid request payload", http.StatusBadRequest)
 		return
 	}

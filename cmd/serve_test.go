@@ -1,8 +1,13 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"testing"
 
+	lfessmdns "github.com/dHarshMakwana/lfess/internal/discovery/mdns"
+	lfessserver "github.com/dHarshMakwana/lfess/server"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,4 +46,117 @@ func TestServeCommand_FlagDefaultsUseEnv(t *testing.T) {
 
 	require.Equal(t, "0.0.0.0", host)
 	require.Equal(t, 9999, port)
+}
+
+type testAnnouncer struct {
+	closed bool
+	err    error
+}
+
+func (a *testAnnouncer) Close() error {
+	a.closed = true
+	return a.err
+}
+
+func TestServeCommand_MDNSFailureIsNonBlocking(t *testing.T) {
+	oldDataDir := dataDir
+	dataDir = t.TempDir()
+	t.Cleanup(func() { dataDir = oldDataDir })
+
+	oldRun := runHTTPServer
+	oldNewAnnouncer := newServeAnnouncer
+	t.Cleanup(func() {
+		runHTTPServer = oldRun
+		newServeAnnouncer = oldNewAnnouncer
+	})
+
+	runCalled := false
+	runHTTPServer = func(ctx context.Context, cfg lfessserver.Config) error {
+		runCalled = true
+		return nil
+	}
+
+	newServeAnnouncer = func(cfg lfessmdns.AnnouncerConfig) (mdnsAnnouncer, error) {
+		return nil, errors.New("mdns unavailable")
+	}
+
+	cmd := newServeCmd()
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"--mdns"})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	require.True(t, runCalled)
+	require.Contains(t, stderr.String(), "warning: mDNS announce disabled")
+}
+
+func TestServeCommand_MDNSEnabledStartsAndStopsAnnouncer(t *testing.T) {
+	oldDataDir := dataDir
+	dataDir = t.TempDir()
+	t.Cleanup(func() { dataDir = oldDataDir })
+
+	oldRun := runHTTPServer
+	oldNewAnnouncer := newServeAnnouncer
+	t.Cleanup(func() {
+		runHTTPServer = oldRun
+		newServeAnnouncer = oldNewAnnouncer
+	})
+
+	announcer := &testAnnouncer{}
+	runHTTPServer = func(ctx context.Context, cfg lfessserver.Config) error {
+		require.Equal(t, "0.0.0.0", cfg.Host)
+		require.Equal(t, 7788, cfg.Port)
+		return nil
+	}
+
+	newServeAnnouncer = func(cfg lfessmdns.AnnouncerConfig) (mdnsAnnouncer, error) {
+		require.Equal(t, "0.0.0.0", cfg.BindHost)
+		require.Equal(t, 7788, cfg.Port)
+		require.Equal(t, "_lfess._tcp", cfg.ServiceName)
+		require.Equal(t, "lfess-node", cfg.Instance)
+		return announcer, nil
+	}
+
+	cmd := newServeCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--mdns", "--host", "0.0.0.0", "--port", "7788", "--mdns-name", "lfess-node"})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	require.True(t, announcer.closed)
+}
+
+func TestServeCommand_MDNSDisabledSkipsAnnouncer(t *testing.T) {
+	oldDataDir := dataDir
+	dataDir = t.TempDir()
+	t.Cleanup(func() { dataDir = oldDataDir })
+
+	oldRun := runHTTPServer
+	oldNewAnnouncer := newServeAnnouncer
+	t.Cleanup(func() {
+		runHTTPServer = oldRun
+		newServeAnnouncer = oldNewAnnouncer
+	})
+
+	runHTTPServer = func(ctx context.Context, cfg lfessserver.Config) error {
+		return nil
+	}
+
+	announceCalls := 0
+	newServeAnnouncer = func(cfg lfessmdns.AnnouncerConfig) (mdnsAnnouncer, error) {
+		announceCalls++
+		return &testAnnouncer{}, nil
+	}
+
+	cmd := newServeCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	require.Equal(t, 0, announceCalls)
 }
