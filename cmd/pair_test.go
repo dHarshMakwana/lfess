@@ -111,6 +111,20 @@ func TestPairJoinCommand_RejectsNonExplicitPeerAddress(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestPairJoinCommand_RejectsAddressWithoutPort(t *testing.T) {
+	oldDataDir := dataDir
+	dataDir = t.TempDir()
+	t.Cleanup(func() { dataDir = oldDataDir })
+
+	cmd := newPairJoinCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"http://127.0.0.1", "--code", "a.b"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+}
+
 func TestPairJoinThenSync_WorksWithoutManualKeyCopy(t *testing.T) {
 	trustedDir := t.TempDir()
 	trustedLog, err := store.NewOpsLog(trustedDir)

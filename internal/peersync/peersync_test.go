@@ -29,9 +29,11 @@ func TestNormalizePeerAddress(t *testing.T) {
 	}{
 		{name: "valid", input: "http://127.0.0.1:7777", want: "http://127.0.0.1:7777"},
 		{name: "trim-and-trailing-slash", input: "  http://10.0.0.5:9000/  ", want: "http://10.0.0.5:9000"},
+		{name: "missing-port", input: "http://127.0.0.1", err: true},
 		{name: "missing-scheme", input: "127.0.0.1:7777", err: true},
 		{name: "unsupported-scheme", input: "https://127.0.0.1:7777", err: true},
 		{name: "missing-host", input: "http://:7777", err: true},
+		{name: "user-info-not-allowed", input: "http://user@127.0.0.1:7777", err: true},
 		{name: "path-not-allowed", input: "http://127.0.0.1:7777/ops", err: true},
 		{name: "query-not-allowed", input: "http://127.0.0.1:7777/?x=1", err: true},
 	}

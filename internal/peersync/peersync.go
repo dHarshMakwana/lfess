@@ -45,11 +45,17 @@ func NormalizePeerAddress(raw string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrInvalidPeerAddress, err)
 	}
+	if u.User != nil {
+		return "", fmt.Errorf("%w: user info is not allowed", ErrInvalidPeerAddress)
+	}
 	if u.Scheme != "http" {
 		return "", fmt.Errorf("%w: only http is supported", ErrInvalidPeerAddress)
 	}
 	if strings.TrimSpace(u.Hostname()) == "" {
 		return "", fmt.Errorf("%w: missing host", ErrInvalidPeerAddress)
+	}
+	if strings.TrimSpace(u.Port()) == "" {
+		return "", fmt.Errorf("%w: missing port", ErrInvalidPeerAddress)
 	}
 	if u.RawQuery != "" || u.Fragment != "" {
 		return "", fmt.Errorf("%w: query and fragment are not allowed", ErrInvalidPeerAddress)
